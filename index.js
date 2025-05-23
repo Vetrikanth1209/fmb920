@@ -3,18 +3,15 @@ const net = require('net');
 const http = require('http');
 const socketIo = require('socket.io');
 const mongoose = require('mongoose');
-const TeltonikaParser = require('teltonika-parser'); // Install via: npm install teltonika-parser
 
 // Initialize Express app and HTTP server
 const app = express();
 const server = http.createServer(app);
 const io = socketIo(server);
 
-// MongoDB setup
-mongoose.connect('mongodb+srv://vetrikanth:vetree1209@cluster0.vf6xd7d.mongodb.net/fmb920', {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
-}).then(() => console.log('Connected to MongoDB'))
+// MongoDB setup (removed deprecated options)
+mongoose.connect('mongodb+srv://vetrikanth:vetree1209@cluster0.vf6xd7d.mongodb.net/fmb920')
+  .then(() => console.log('Connected to MongoDB'))
   .catch(err => console.error('MongoDB connection error:', err));
 
 // MongoDB Schema
@@ -47,59 +44,47 @@ const tcpServer = net.createServer((socket) => {
 
   socket.on('data', async (data) => {
     try {
-      // Parse Teltonika protocol data
-      const parser = new TeltonikaParser(data);
-      const parsedData = parser.parse();
+      // Log raw data for debugging
+      console.log('Raw data:', data.toString('hex'));
 
-      if (!parsedData || !parsedData.records) {
+      // Parse Teltonika protocol data
+      const records = parseTeltonikaData(data);
+      if (!records) {
         console.error('Invalid data packet');
         return;
       }
 
-      // Process each record
-      const records = parsedData.records.map(record => ({
-        deviceId: parsedData.imei || 'unknown', // Extract IMEI
+      // Add deviceId (IMEI) - you may need to extract this from the packet header
+      // For simplicity, assuming a single device; update as needed
+      const deviceId = 'your-device-imei'; // Replace with actual IMEI extraction logic
+
+      const formattedRecords = records.map(record => ({
+        deviceId,
         timestamp: record.timestamp,
-        gps: {
-          latitude: record.gps.latitude,
-          longitude: record.gps.longitude,
-          altitude: record.gps.altitude,
-          angle: record.gps.angle,
-          satellites: record.gps.satellites,
-          speed: record.gps.speed,
-        },
-        accelerometer: {
-          x: record.io[251] || 0, // AVL ID 251 for X-axis (verify with manual)
-          y: record.io[252] || 0, // AVL ID 252 for Y-axis
-          z: record.io[253] || 0, // AVL ID 253 for Z-axis
-        },
+        gps: record.gps,
+        accelerometer: record.accelerometer,
         priority: record.priority,
       }));
 
       // Save to MongoDB
-      await Device.insertMany(records);
-      console.log('Data saved:', records);
+      await Device.insertMany(formattedRecords);
+      console.log('Data saved:', formattedRecords);
 
       // Broadcast to connected clients
-      io.emit('deviceData', records);
+      io.emit('deviceData', formattedRecords);
+
+      // Send acknowledgment
+      const numRecords = data.readUInt8(9); // Number of records at byte 9
+      const ack = Buffer.alloc(4);
+      ack.writeUInt32BE(numRecords, 0);
+      socket.write(ack);
     } catch (err) {
-      console.error('Error parsing data:', err);
+      console.error('Error processing data:', err);
     }
   });
 
   socket.on('end', () => console.log('FMB920 disconnected'));
   socket.on('error', (err) => console.error('Socket error:', err));
-
-  // Send acknowledgment to FMB920 (required for Codec 8 Extended)
-  socket.on('data', (data) => {
-    const parser = new TeltonikaParser(data);
-    const parsed = parser.parse();
-    if (parsed && parsed.numberOfData) {
-      const ack = Buffer.alloc(4);
-      ack.writeUInt32BE(parsed.numberOfData, 0);
-      socket.write(ack);
-    }
-  });
 });
 
 // Start TCP server
@@ -117,11 +102,16 @@ app.get('/api/devices', async (req, res) => {
   }
 });
 
-// Simple parser for Teltonika Codec 8 Extended (fallback if teltonika-parser is not used)
+// Parser for Teltonika Codec 8 Extended
 function parseTeltonikaData(data) {
   try {
+    // Verify Codec 8 Extended
     const codecId = data.readUInt8(8);
-    if (codecId !== 0x8E) return null; // Codec 8 Extended
+    if (codecId !== 0x8E) {
+      console.error('Unsupported codec ID:', codecId);
+      return null;
+    }
+
     const numRecords = data.readUInt8(9);
     let offset = 10;
     const records = [];
@@ -174,9 +164,9 @@ function parseTeltonikaData(data) {
         priority,
         gps: { latitude, longitude, altitude, angle, satellites, speed },
         accelerometer: {
-          x: ioData[251] || 0,
-          y: ioData[252] || 0,
-          z: ioData[253] || 0,
+          x: ioData[251] || 0, // AVL ID 251 for X-axis (verify with manual)
+          y: ioData[252] || 0, // AVL ID 252 for Y-axis
+          z: ioData[253] || 0, // AVL ID 253 for Z-axis
         },
       });
     }
@@ -186,10 +176,6 @@ function parseTeltonikaData(data) {
     return null;
   }
 }
-
-app.get('/test',(req,res)=>{
-    res.json({message:"FMB920 server is running!"});
-})
 
 // Start HTTP and Socket.IO server
 const httpPort = 3000;
