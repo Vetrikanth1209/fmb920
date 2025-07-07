@@ -617,6 +617,44 @@ app.get('/api/tracker-data', async (req, res) => {
   }
 });
 
+// Get latest position (latitude and longitude only) of the most recent record
+app.get('/api/tracker-data/latest-position', async (req, res) => {
+  const startTime = new Date();
+  try {
+    logger.info('Fetching latest position', { ip: req.ip });
+
+    const latestData = await TrackerData.findOne()
+      .sort({ timestamp: -1 })
+      .select('latitude longitude');
+
+    if (!latestData) {
+      logger.warn('No position data found in database');
+      return res.status(404).json({ success: false, message: 'No position data found' });
+    }
+
+    const responseTime = new Date() - startTime;
+    logger.info('Latest position fetched successfully', {
+      latitude: latestData.latitude,
+      longitude: latestData.longitude,
+      responseTime: `${responseTime}ms`
+    });
+
+    res.json({
+      success: true,
+      latitude: latestData.latitude,
+      longitude: latestData.longitude
+    });
+  } catch (error) {
+    const responseTime = new Date() - startTime;
+    logger.error('Failed to fetch latest position', {
+      error: error.message,
+      responseTime: `${responseTime}ms`,
+      stack: error.stack
+    });
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 // Get latest position for a device
 app.get('/api/tracker-data/latest/:deviceId', async (req, res) => {
   try {
